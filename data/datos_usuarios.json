@@ -1,0 +1,34 @@
+[
+  {
+    "rut": "12345678-9",
+    "nombre": "Ana María Silva",
+    "categoria": "Personal Operativo",
+    "estado": "ACTIVO",
+    "meses_morosidad": 0,
+    "grupo_familiar_registrado": true
+  },
+  {
+    "rut": "98765432-1",
+    "nombre": "Carlos Mendoza",
+    "categoria": "Personal Retirado con Pensión",
+    "estado": "ACTIVO",
+    "meses_morosidad": 1,
+    "grupo_familiar_registrado": false
+  },
+  {
+    "rut": "11223344-5",
+    "nombre": "Beatriz Rojas",
+    "categoria": "Empleado Administrativo",
+    "estado": "DADO_DE_BAJA",
+    "meses_morosidad": 3,
+    "grupo_familiar_registrado": true
+  },
+  {
+    "rut": "55667788-9",
+    "nombre": "Diego Morales",
+    "categoria": "Personal Retirado sin Pensión",
+    "estado": "NO_ELEGIBLE",
+    "meses_morosidad": 0,
+    "grupo_familiar_registrado": false
+  }
+]
