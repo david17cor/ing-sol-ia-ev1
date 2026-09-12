@@ -8,7 +8,10 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 
-# 1. Configurar RAG
+# 1. Configuración de página
+st.set_page_config(page_title="Asistente FBC", page_icon="🤖", layout="centered")
+
+# 2. Caché para el Pipeline RAG (se ejecuta 1 sola vez)
 @st.cache_resource
 def setup_rag():
     doc_path = os.path.join("data", "terminos_condiciones.txt")
@@ -18,54 +21,89 @@ def setup_rag():
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
     docs = text_splitter.split_documents(documents)
     
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        model_kwargs={'device': 'cpu'}
+    )
     vectorstore = Chroma.from_documents(docs, embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 2})
 
-st.set_page_config(page_title="Asistente FBC", page_icon="🤖")
+# 3. Caché para la inicialización del LLM
+@st.cache_resource
+def setup_llm():
+    llm = ChatOllama(
+        model="qwen2.5:3b", 
+        temperature=0.1,
+        request_timeout=60.0
+    )
+    return llm, llm.bind_tools([consultar_estado_rut])
+
 st.title("🤖 Asistente Virtual - Fundación Bienestar Corporativo")
 
+# Inicialización de recursos
 retriever = setup_rag()
-llm = ChatOllama(model="qwen2.5:3b", temperature=0.1)
-llm_with_tools = llm.bind_tools([consultar_estado_rut])
+llm, llm_with_tools = setup_llm()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Historial de chat
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
+# Interacción del usuario
 if user_input := st.chat_input("Escribe tu consulta aquí..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     st.chat_message("user").write(user_input)
     
+    # 1. Recuperación de contexto RAG
     rag_docs = retriever.invoke(user_input)
     context_str = "\n\n".join([d.page_content for d in rag_docs])
     
+    # 2. System Prompt estricto
     prompt_system = f"""Eres el Asistente Virtual Oficial de la Fundación Bienestar Corporativo (FBC).
 Tu trato es empático, cercano y estrictamente profesional.
-- Solicita el RUT en la primera interacción. Usa la herramienta 'consultar_estado_rut' cuando recibas un RUT.
-- Si el usuario consulta por 'Legal Asesores', 'Giftcard' u otros convenios excluidos, responde exactamente:
-  "Lamentamos informarle que revisando su información usted no se encuentra en condiciones de obtener el beneficio '[Nombre]', para más información contactar mediante call center."
-- Para pagos, recuerda que siempre son mediante descuento por planilla.
-Contexto RAG recuperado: {context_str}"""
 
-    response = llm_with_tools.invoke([("system", prompt_system), ("human", user_input)])
-    
-    if response.tool_calls:
-        for tool_call in response.tool_calls:
-            if tool_call["name"] == "consultar_estado_rut":
-                rut_val = tool_call["args"].get("rut", "")
-                tool_res = consultar_estado_rut.invoke({"rut": rut_val})
-                
-                final_response = llm.invoke([
-                    ("system", prompt_system),
-                    ("human", user_input),
-                    ("assistant", f"Resultado de consulta BD: {tool_res}")
-                ])
-                output = final_response.content
-    else:
-        output = response.content
+REGLA CRÍTICA Y OBLIGATORIA:
+- PROHIBIDO pedir el RUT para responder preguntas generales sobre convenios, farmacias, salud dental, reembolsos o horarios. 
+- Responde la consulta general INMEDIATAMENTE utilizando el siguiente Contexto RAG recuperado.
 
+INSTRUCCIONES DE ATENCIÓN:
+1. Para consultas generales, entrega la información del Contexto RAG sin solicitar datos personales.
+2. Solicita o procesa el RUT ÚNICAMENTE si la consulta requiere verificar el estado individual, deudas o cargas del beneficiario.
+3. Si la consulta incluye un RUT o requiere revisión de cuenta, invoca obligatoriamente la herramienta 'consultar_estado_rut'.
+4. Si consultan por 'Legal Asesores', 'Giftcard' u otros convenios excluidos, responde exactamente:
+   "Lamentamos informarle que revisando su información usted no se encuentra en condiciones de obtener el beneficio '[Nombre]', para más información contactar mediante call center."
+5. Todos los pagos de beneficios se realizan mediante descuento por planilla.
+
+Contexto RAG recuperado:
+{context_str}"""
+
+    with st.spinner("Procesando consulta..."):
+        try:
+            # 3. Primer pase con Ollama (detecta si es RAG directo o si debe invocar la Tool)
+            response = llm_with_tools.invoke([("system", prompt_system), ("human", user_input)])
+            output = ""
+
+            # 4. Evaluación de Tool Calls (Consulta de RUT)
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                for tool_call in response.tool_calls:
+                    if tool_call["name"] == "consultar_estado_rut":
+                        rut_val = tool_call["args"].get("rut", "")
+                        
+                        # Ejecución determinista directa para evitar congelamiento por 2da llamada a Ollama
+                        tool_res = consultar_estado_rut.invoke({"rut": rut_val})
+                        output = f"**Resultado de la consulta de estado (RUT {rut_val}):**\n\n{tool_res}"
+            else:
+                output = response.content
+
+            # 5. Control de resiliencia ante cadenas vacías
+            if not output or output.strip() == "":
+                output = "No se pudo recuperar información para esta consulta. Por favor, intenta redactarla de otra forma o proporciona tu RUT si deseas revisar tu estado personal."
+
+        except Exception as e:
+            output = f"Ocurrió un error al procesar la solicitud: {str(e)}"
+
+    # 6. Renderizado de respuesta
     st.session_state.messages.append({"role": "assistant", "content": output})
     st.chat_message("assistant").write(output)
