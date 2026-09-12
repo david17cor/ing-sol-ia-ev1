@@ -81,29 +81,41 @@ Contexto RAG recuperado:
 
     with st.spinner("Procesando consulta..."):
         try:
-            # 3. Primer pase con Ollama (detecta si es RAG directo o si debe invocar la Tool)
+            # 3. Invocación inicial con Ollama
             response = llm_with_tools.invoke([("system", prompt_system), ("human", user_input)])
             output = ""
 
-            # 4. Evaluación de Tool Calls (Consulta de RUT)
+            # 4. Evaluación de Tool Calls con validación de RUT real
+            tool_ejecutada_con_exito = False
+            
             if hasattr(response, "tool_calls") and response.tool_calls:
                 for tool_call in response.tool_calls:
                     if tool_call["name"] == "consultar_estado_rut":
-                        rut_val = tool_call["args"].get("rut", "")
+                        rut_val = str(tool_call["args"].get("rut", "")).strip()
                         
-                        # Ejecución determinista directa para evitar congelamiento por 2da llamada a Ollama
-                        tool_res = consultar_estado_rut.invoke({"rut": rut_val})
-                        output = f"**Resultado de la consulta de estado (RUT {rut_val}):**\n\n{tool_res}"
-            else:
-                output = response.content
+                        # Solo ejecutar la tool si el modelo capturó un RUT real (no cadena vacía)
+                        if rut_val and len(rut_val) >= 7:
+                            tool_res = consultar_estado_rut.invoke({"rut": rut_val})
+                            output = f"**Resultado de la consulta de estado (RUT {rut_val}):**\n\n{tool_res}"
+                            tool_ejecutada_con_exito = True
+                            break
 
-            # 5. Control de resiliencia ante cadenas vacías
+            # 5. Si no hubo Tool Call o si intentó llamar a la tool sin un RUT válido (fallback a RAG puro)
+            if not tool_ejecutada_con_exito:
+                if response.content and response.content.strip():
+                    output = response.content
+                else:
+                    # Forzar respuesta directa con RAG usando el modelo base si la respuesta tool vino vacía
+                    fallback_response = llm.invoke([("system", prompt_system), ("human", user_input)])
+                    output = fallback_response.content
+
+            # 6. Control de resiliencia final
             if not output or output.strip() == "":
-                output = "No se pudo recuperar información para esta consulta. Por favor, intenta redactarla de otra forma o proporciona tu RUT si deseas revisar tu estado personal."
+                output = "No se pudo recuperar información para esta consulta. Por favor, reintenta tu pregunta o proporciona tu RUT si deseas revisar tu estado personal."
 
         except Exception as e:
             output = f"Ocurrió un error al procesar la solicitud: {str(e)}"
 
-    # 6. Renderizado de respuesta
+    # 7. Renderizado de respuesta
     st.session_state.messages.append({"role": "assistant", "content": output})
     st.chat_message("assistant").write(output)
